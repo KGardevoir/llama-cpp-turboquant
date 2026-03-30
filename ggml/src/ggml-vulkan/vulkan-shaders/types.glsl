@@ -1713,6 +1713,23 @@ struct block_mxfp4
 #define A_TYPE block_mxfp4
 #endif
 
+#define QUANT_K_TURBO3_0 32
+#define QUANT_R_TURBO3_0 1
+
+struct block_turbo3_0
+{
+    float16_t norm;
+    uint8_t qs[8];      // 2-bit centroid indices (4 per byte)
+    uint8_t signs[4];   // 1-bit high bit of 3-bit index (8 per byte)
+};
+
+#if defined(DATA_A_TURBO3_0)
+#define QUANT_K QUANT_K_TURBO3_0
+#define QUANT_R QUANT_R_TURBO3_0
+#define QUANT_AUXF 1
+#define A_TYPE block_turbo3_0
+#endif
+
 #define QUANT_K_NVFP4 64
 #define QUANT_R_NVFP4 1
 
