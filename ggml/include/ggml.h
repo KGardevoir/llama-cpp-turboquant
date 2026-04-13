@@ -471,6 +471,7 @@ extern "C" {
         GGML_FTYPE_MOSTLY_BF16    = 24, // except 1d tensors
         GGML_FTYPE_MOSTLY_MXFP4   = 25, // except 1d tensors
         GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
     };
 
     // available tensor operations:
