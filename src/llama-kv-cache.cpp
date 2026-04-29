@@ -524,10 +524,11 @@ llama_kv_cache::llama_kv_cache(
         // No single default is correct everywhere. Default OFF + per-side env knobs
         // lets each user tune for their specific config (see README / turboquant_plus#88).
         //
-        // LLAMA_ATTN_ROT_DISABLE retained as a no-op alias (default OFF makes it
-        // redundant but historical scripts may set it).
+        // Default attn_rot_disable=false now that rotation is OFF by default (via
+        // attn_rot_k/v=false). LLAMA_ATTN_ROT_DISABLE=1 is a hard lock-out: it forces
+        // rotation off and blocks the per-side LLAMA_ATTN_ROT_*_OVERRIDE knobs below.
         const char * LLAMA_ATTN_ROT_DISABLE = getenv("LLAMA_ATTN_ROT_DISABLE");
-        const bool attn_rot_disable = LLAMA_ATTN_ROT_DISABLE ? atoi(LLAMA_ATTN_ROT_DISABLE) : true;
+        const bool attn_rot_disable = LLAMA_ATTN_ROT_DISABLE ? (atoi(LLAMA_ATTN_ROT_DISABLE) != 0) : false;
 
         // Default: rotation OFF on both sides (safe across all tested model families).
         attn_rot_k = false;
