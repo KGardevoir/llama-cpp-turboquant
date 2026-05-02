@@ -1131,6 +1131,7 @@ llm_graph_qkv llm_graph_context::build_qkv(
     }
 
     cb(Qcur, "Qcur", il);
+    cb(Qcur, "Qcur_pre_rope", il);  // calibration hook: pre-RoPE, post-reshape, one call per layer
     cb(Kcur, "Kcur", il);
     cb(Vcur, "Vcur", il);
 

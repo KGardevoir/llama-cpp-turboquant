@@ -6,6 +6,7 @@
 #include "llama-graph.h"
 #include "llama-adapter.h"
 #include "llama-impl.h"
+#include "llama-triattention-calibrate.h"
 
 #include "ggml-cpp.h"
 #include "ggml-opt.h"
@@ -118,6 +119,10 @@ struct llama_context {
 
     int encode(const llama_batch & batch_inp);
     int decode(const llama_batch & batch_inp);
+
+    // Start capturing pre-RoPE Q statistics into a .triattention calibration file.
+    // Returns 0 on success, -1 on error.
+    int32_t triattention_calibrate_start(const char * output_path);
 
     //
     // state save/load
@@ -346,4 +351,7 @@ private:
     mutable int32_t n_eval   = 0; // number of eval calls
 
     mutable int32_t n_reused = 0; // number of times the previous graph was reused
+
+    // TriAttention offline calibration state.  Non-null while --triattention-calibrate is active.
+    triattention_calibrate_state * tria_cal = nullptr;
 };

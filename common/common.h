@@ -684,6 +684,7 @@ struct common_params {
     bool        triattention_disable_mlr  = false;  // ablation: disable MLR weighting
     bool        triattention_disable_trig = false;  // ablation: norm-only scoring
     bool        triattention_log          = false;  // log pruning events to stderr
+    std::string triattention_calibrate;             // if non-empty: collect Q stats and write .triattention file here
 };
 
 // call once at the start of a program if it uses libcommon

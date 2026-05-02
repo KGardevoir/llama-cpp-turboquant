@@ -792,6 +792,14 @@ extern "C" {
                             bool   disable_trig,
                             bool   enable_logging);
 
+    // Start collecting pre-RoPE Q statistics for offline calibration.
+    // Pass calibration text via -p / -f as normal; the .triattention file is
+    // written automatically when the context is freed (or can be triggered
+    // earlier by freeing the context). Returns 0 on success, -1 on error.
+    LLAMA_API int32_t llama_triattention_calibrate_start(
+            struct llama_context * ctx,
+                      const char * output_path);
+
     //
     // State / sessions
     //

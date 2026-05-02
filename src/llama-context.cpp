@@ -1,4 +1,5 @@
 #include "llama-context.h"
+#include "llama-triattention-calibrate.h"
 
 #include "ggml.h"
 #include "llama-arch.h"
@@ -386,6 +387,12 @@ llama_context::~llama_context() {
         }
     }
     ggml_opt_free(opt_ctx);
+
+    if (tria_cal) {
+        triattention_calibrate_write(tria_cal);
+        triattention_calibrate_free(tria_cal);
+        tria_cal = nullptr;
+    }
 }
 
 void llama_context::sched_reserve() {
@@ -1196,6 +1203,11 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         n_reused++;
     } else {
+        // New graph build — stale tensor pointers are no longer valid.
+        if (tria_cal) {
+            tria_cal->pending_q.clear();
+        }
+
         res->reset();
 
         ggml_backend_sched_reset(sched.get());
@@ -1236,6 +1248,9 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         ret = status;
         return nullptr;
     }
+
+    // Accumulate pre-RoPE Q statistics for calibration (no-op when tria_cal is null).
+    triattention_calibrate_process_batch(tria_cal);
 
     ret = GGML_STATUS_SUCCESS;
 
@@ -2222,6 +2237,13 @@ llm_graph_cb llama_context::graph_get_cb() const {
                     }
                 }
             }
+        }
+
+        // Calibration hook: mark pre-RoPE Q tensors as graph outputs so their
+        // device memory is preserved until we read it back after graph_compute.
+        if (tria_cal && il >= 0 && strcmp(name, "Qcur_pre_rope") == 0) {
+            ggml_set_output(cur);
+            tria_cal->pending_q[il] = cur;
         }
     };
 }
@@ -3392,6 +3414,44 @@ int32_t llama_triattention_init(
 
     kv->init_triattention(stats_path, &cfg);
     return kv->has_triattention() ? 0 : -1;
+}
+
+int32_t llama_context::triattention_calibrate_start(const char * output_path) {
+    if (tria_cal) {
+        // Already calibrating — flush the current file and restart.
+        triattention_calibrate_write(tria_cal);
+        triattention_calibrate_free(tria_cal);
+        tria_cal = nullptr;
+    }
+
+    const auto & hparams = model.hparams;
+
+    // Detect rope style: interleaved (1) for GPT-NeoX, half (0) for everything else.
+    const uint32_t rope_style = (hparams.rope_type == LLAMA_ROPE_TYPE_NEOX) ? 1u : 0u;
+
+    char desc[256] = {};
+    llama_model_desc(&model, desc, sizeof(desc));
+
+    tria_cal = triattention_calibrate_create(
+        output_path,
+        hparams.n_layer,
+        hparams.n_head(0),
+        hparams.n_head_kv(0),
+        hparams.n_embd_head_k(0),
+        (double)cparams.rope_freq_base,
+        rope_style,
+        desc);
+
+    return tria_cal ? 0 : -1;
+}
+
+int32_t llama_triattention_calibrate_start(
+        struct llama_context * ctx,
+                  const char * output_path) {
+    if (!ctx || !output_path || output_path[0] == '\0') {
+        return -1;
+    }
+    return ctx->triattention_calibrate_start(output_path);
 }
 
 // llama state API

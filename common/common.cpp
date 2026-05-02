@@ -1266,6 +1266,16 @@ common_init_result::common_init_result(common_params & params) :
         }
     }
 
+    // Start offline calibration if --triattention-calibrate was given.
+    // The .triattention file is written when the context is freed.
+    if (!params.triattention_calibrate.empty()) {
+        int32_t rc = llama_triattention_calibrate_start(lctx, params.triattention_calibrate.c_str());
+        if (rc != 0) {
+            LOG_WRN("%s: TriAttention calibration failed to start (output=%s)\n",
+                    __func__, params.triattention_calibrate.c_str());
+        }
+    }
+
     pimpl->context.reset(lctx);
 }
 
