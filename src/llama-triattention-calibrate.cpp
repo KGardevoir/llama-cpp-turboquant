@@ -85,10 +85,12 @@ void triattention_calibrate_process_batch(triattention_calibrate_state * state) 
         const size_t nb1 = cur->nb[1];  // bytes per head
         const size_t nb2 = cur->nb[2];  // bytes per token (may include K/V gap for fused QKV)
 
-        // Read raw device bytes.  For non-contiguous views (fused QKV path) nb2
-        // encompasses K and V data between token rows; stride arithmetic below
-        // selects only the Q elements.
-        const size_t raw_bytes = nb2 * ne2;
+        // Use ggml_nbytes() so we never exceed the tensor's logical span.
+        // For contiguous tensors this equals nb2*ne2; for fused-QKV views
+        // nb2 is wider than the Q row so nb2*ne2 would exceed ggml_nbytes()
+        // and trigger an assertion.  Stride-based indexing below still works
+        // correctly because the inter-token gaps are included in nb2.
+        const size_t raw_bytes = ggml_nbytes(cur);
         std::vector<uint8_t> raw(raw_bytes);
         ggml_backend_tensor_get(cur, raw.data(), 0, raw_bytes);
 

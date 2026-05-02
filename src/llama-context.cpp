@@ -1249,8 +1249,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         return nullptr;
     }
 
-    // Accumulate pre-RoPE Q statistics for calibration (no-op when tria_cal is null).
-    triattention_calibrate_process_batch(tria_cal);
+    // Accumulate pre-RoPE Q statistics for calibration.
+    // Synchronize first so GPU backends finish writing before we read back.
+    if (tria_cal && !tria_cal->pending_q.empty()) {
+        synchronize();
+        triattention_calibrate_process_batch(tria_cal);
+    }
 
     ret = GGML_STATUS_SUCCESS;
 
@@ -2242,6 +2246,15 @@ llm_graph_cb llama_context::graph_get_cb() const {
         // Calibration hook: mark pre-RoPE Q tensors as graph outputs so their
         // device memory is preserved until we read it back after graph_compute.
         if (tria_cal && il >= 0 && strcmp(name, "Qcur_pre_rope") == 0) {
+            // For reshape-views (separate QKV) and view_3d slices (fused QKV),
+            // ggml_set_output on the view alone does not prevent the allocator
+            // from reusing the backing tensor's memory for other ops in the same
+            // graph.  Walk the view chain and mark the actual data tensor too.
+            ggml_tensor * data_src = cur;
+            while (data_src->view_src) {
+                data_src = data_src->view_src;
+            }
+            ggml_set_output(data_src);
             ggml_set_output(cur);
             tria_cal->pending_q[il] = cur;
         }
