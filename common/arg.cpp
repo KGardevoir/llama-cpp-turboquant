@@ -4007,11 +4007,11 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--triattention-calibrate"}, "PATH",
         "collect pre-RoPE Q statistics from the prompt and write a .triattention calibration file\n"
-        "example: llama-cli -m model.gguf --triattention-calibrate model.triattention -f corpus.txt --no-cnv",
+        "example: llama-completion -m model.gguf --triattention-calibrate model.triattention -f corpus.txt",
         [](common_params & params, const std::string & value) {
             params.triattention_calibrate = value;
         }
-    ).set_env("LLAMA_ARG_TRIATTENTION_CALIBRATE").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    ).set_env("LLAMA_ARG_TRIATTENTION_CALIBRATE").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_COMPLETION}));
     add_opt(common_arg(
         {"--spec-default"},
         string_format("enable default speculative decoding config"),
