@@ -132,6 +132,8 @@ bool triattention_calibrate_write(triattention_calibrate_state * state) {
     if (state->written) {
         return true;
     }
+    fprintf(stderr, "[TriAttention calibrate] write called: output=%s tokens=%llu\n",
+            state->output_path.c_str(), (unsigned long long)state->n_tokens);
     if (state->n_tokens == 0) {
         fprintf(stderr, "[TriAttention calibrate] ERROR: no tokens accumulated — "
                 "run with -p or -f to provide calibration text\n");

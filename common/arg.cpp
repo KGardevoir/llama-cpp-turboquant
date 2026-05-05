@@ -4007,7 +4007,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--triattention-calibrate"}, "PATH",
         "collect pre-RoPE Q statistics from the prompt and write a .triattention calibration file\n"
-        "example: llama-completion -m model.gguf --triattention-calibrate model.triattention -f corpus.txt",
+        "example: llama-completion -m model.gguf --triattention-calibrate model.triattention -f corpus.txt -no-cnv -n 0",
         [](common_params & params, const std::string & value) {
             params.triattention_calibrate = value;
         }

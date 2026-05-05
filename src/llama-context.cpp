@@ -1251,9 +1251,16 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
     // Accumulate pre-RoPE Q statistics for calibration.
     // Synchronize first so GPU backends finish writing before we read back.
-    if (tria_cal && !tria_cal->pending_q.empty()) {
-        synchronize();
-        triattention_calibrate_process_batch(tria_cal);
+    if (tria_cal) {
+        if (tria_cal->pending_q.empty()) {
+            fprintf(stderr, "[TriAttention calibrate] WARNING: pending_q is empty after graph_compute "
+                    "(Qcur_pre_rope callback never fired — model may not use build_qkv)\n");
+        } else {
+            synchronize();
+            triattention_calibrate_process_batch(tria_cal);
+            fprintf(stderr, "[TriAttention calibrate] process_batch done: total tokens so far = %llu\n",
+                    (unsigned long long)tria_cal->n_tokens);
+        }
     }
 
     ret = GGML_STATUS_SUCCESS;
@@ -2257,6 +2264,12 @@ llm_graph_cb llama_context::graph_get_cb() const {
             ggml_set_output(data_src);
             ggml_set_output(cur);
             tria_cal->pending_q[il] = cur;
+            if (il == 0) {
+                fprintf(stderr, "[TriAttention calibrate] graph_get_cb: Qcur_pre_rope fired for layer 0 "
+                        "(ne=[%lld,%lld,%lld] type=%d)\n",
+                        (long long)cur->ne[0], (long long)cur->ne[1], (long long)cur->ne[2],
+                        (int)cur->type);
+            }
         }
     };
 }
