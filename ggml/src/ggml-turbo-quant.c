@@ -581,8 +581,7 @@ void dequantize_row_turbo4_0(const block_turbo4_0 * GGML_RESTRICT x, float * GGM
     const int d  = QK_TURBO4;
 
 #if TURBO4_USE_4BIT
-    /* 4-bit PolarQuant: nibble unpack → centroid → inverse rotate → scale */
-    /* TODO: add proper 4-bit centroid table to C code (currently only in Metal) */
+    /* 4-bit PolarQuant: nibble unpack → centroid lookup → scale by corrected norm */
     static const float CENTROIDS_4BIT[16] = {
         -0.173926f, -0.117195f, -0.089527f, -0.068756f,
         -0.051262f, -0.035597f, -0.020989f, -0.006938f,
@@ -596,10 +595,10 @@ void dequantize_row_turbo4_0(const block_turbo4_0 * GGML_RESTRICT x, float * GGM
             uint8_t idx = (x[block].qs[i / 2] >> ((i % 2) * 4)) & 0xF;
             dst[i] = CENTROIDS_4BIT[idx] * norm;
         }
-        /* No inverse WHT, dequant stays in the rotated domain.
-        * Q is WHT-rotated by the graph, so <Q_rot, K_rot> gives correct attention scores.
-        * The inverse WHT is applied to the attention output via GGML_OP_TURBO_WHT (direction=1) in the graph. 
-        */
+        /* Output is in WHT-rotated space — no inverse WHT applied here.
+         * For attention: Q is also WHT-rotated by the graph, so <Q_rot,K_rot>=<Q,K>.
+         * Callers that need unrotated K (e.g. TriAttention) must apply WHT_inv themselves.
+         */
     }
 #else
     /* Legacy 3-bit + QJL dequant */

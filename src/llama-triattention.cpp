@@ -48,19 +48,15 @@
 #include <sys/time.h>
 #endif
 
-// Pre-computed WHT inverse rotation matrix R^T (128x128)
-// Used to convert turbo2/turbo3 dequant output from WHT-rotated space
-// back to the original post-RoPE embedding space.
-// turbo4 dequant already applies R^T internally, so this is only needed
-// for turbo2_0 and turbo3_0 types.
-#include "turbo-rotation-data.h"
-
-// TurboQuant dequant function declarations (from ggml-turbo-quant.c)
+// TurboQuant dequant and WHT function declarations (from ggml-turbo-quant.c)
 // Using void* since block type definitions live in ggml-common.h (not on include path)
 extern "C" {
     void dequantize_row_turbo2_0(const void * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
     void dequantize_row_turbo3_0(const void * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
     void dequantize_row_turbo4_0(const void * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+    // In-place inverse WHT — undoes the forward WHT applied during quantization.
+    // group_size must be 64 or 128 (must match the size used during encoding).
+    void turbo_cpu_fwht_inverse(float * x, int group_size);
 }
 
 // Standard ggml dequant for Q8_0, F16, etc.
@@ -83,19 +79,6 @@ static double triattention_time_ms(void) {
     gettimeofday(&tv, NULL);
     return (double)tv.tv_sec * 1000.0 + (double)tv.tv_usec / 1000.0;
 #endif
-}
-
-// Matrix-vector multiply: out[i] = sum_j mat[i*d + j] * vec[j]
-// Used for inverse WHT rotation on turbo2/turbo3 dequant output
-static void matvec_128(const float * mat, const float * vec, float * out) {
-    for (int i = 0; i < 128; i++) {
-        float sum = 0.0f;
-        const float * row = mat + i * 128;
-        for (int j = 0; j < 128; j++) {
-            sum += row[j] * vec[j];
-        }
-        out[i] = sum;
-    }
 }
 
 // ============================================================================
@@ -407,15 +390,17 @@ void triattention_invert_rope(
                 dst[f + freq_count] = im * c - re * s;
             }
         } else {
-            // Interleaved style: [re_0, im_0, re_1, im_1, ...]
+            // Interleaved style input: [re_0, im_0, re_1, im_1, ...]
+            // Output always in half layout: [re_0..re_{fc-1} | im_0..im_{fc-1}]
+            // so that triattention_score_keys can read k[f] and k[f+freq_count].
             for (uint32_t f = 0; f < freq_count; f++) {
                 float angle = omega[f] * pos;
                 float c = cosf(angle);
                 float s = sinf(angle);
                 float re = src[2 * f];
                 float im = src[2 * f + 1];
-                dst[2 * f]     = re * c + im * s;
-                dst[2 * f + 1] = im * c - re * s;
+                dst[f]              = re * c + im * s;
+                dst[f + freq_count] = im * c - re * s;
             }
         }
     }
@@ -521,29 +506,29 @@ void triattention_score_keys(
 // ============================================================================
 
 // Dequantize K values for a specific KV head from the cache tensor.
-// Handles all supported quantization types and applies inverse WHT
-// rotation for turbo2/turbo3 types.
+// Handles all supported quantization types. Applies inverse WHT for all
+// TurboQuant types (turbo2/turbo3/turbo4): their dequant outputs are in
+// WHT-rotated space; we must invert the rotation to get post-RoPE K.
 //
 // Parameters:
-//   out         — [n_cells, padded_head_dim] dequantized float output
+//   out         — [n_cells, head_dim] dequantized float output
 //   k_tensor    — the raw K cache tensor for this layer
 //   cell_indices— [n_cells] which cell slots to extract
 //   kv_head_idx — which KV head (0..n_kv_heads-1)
 //   n_cells     — number of cells to dequantize
-//   padded_hd   — padded head dimension (128-aligned for turbo types)
+//   head_dim    — head dimension (elements per head, e.g. 128)
 //   n_kv_heads  — total number of KV heads
-//   need_wht_inv— whether to apply inverse WHT rotation (turbo2/turbo3)
+//   need_wht_inv— whether to apply inverse WHT (true for all TurboQuant types)
 //
-// Note: This function copies data from potentially GPU-resident tensors
-// to CPU memory, which involves a synchronous transfer. This is acceptable
-// because pruning happens infrequently (every divide_length tokens).
+// Note: copies data from potentially GPU-resident tensors to CPU memory.
+// This synchronous transfer is acceptable because pruning is infrequent.
 static void triattention_dequant_kv_head(
     float              * out,
     const ggml_tensor  * k_tensor,
     const uint32_t     * cell_indices,
     uint32_t             kv_head_idx,
     uint32_t             n_cells,
-    uint32_t             padded_hd,
+    uint32_t             head_dim,
     uint32_t             n_kv_heads,
     bool                 need_wht_inv)
 {
@@ -552,73 +537,77 @@ static void triattention_dequant_kv_head(
     const size_t    row_bytes = ggml_row_size(k_type, n_embd_k_gqa);
 
     // Byte offset to this KV head within a row
-    const size_t head_offset_bytes = ggml_row_size(k_type, (uint64_t)kv_head_idx * padded_hd);
-    const size_t head_bytes = ggml_row_size(k_type, padded_hd);
+    const size_t head_offset_bytes = ggml_row_size(k_type, (uint64_t)kv_head_idx * head_dim);
+    const size_t head_bytes = ggml_row_size(k_type, head_dim);
 
-    // Temporary buffer for one quantized head block
+    // Temporary buffers for one head's quantized and dequantized data
     std::vector<uint8_t> quant_buf(head_bytes);
-
-    // Temporary buffer for dequantized values (before WHT inverse)
-    std::vector<float> dequant_tmp(padded_hd);
+    std::vector<float>   dequant_tmp(need_wht_inv ? head_dim : 0);
 
     for (uint32_t ci = 0; ci < n_cells; ci++) {
         const uint32_t cell_idx = cell_indices[ci];
 
         // Byte offset in the full tensor: row_bytes * cell_idx + head_offset_bytes
-        // This addresses stream 0 (the common case for unified KV caches)
         const size_t tensor_offset = (size_t)cell_idx * row_bytes + head_offset_bytes;
 
         // Copy quantized data from backend (may be GPU) to CPU
         ggml_backend_tensor_get(k_tensor, quant_buf.data(), tensor_offset, head_bytes);
 
-        // Dequantize based on type
-        float * dst = need_wht_inv ? dequant_tmp.data() : (out + (size_t)ci * padded_hd);
+        // Dequantize: route to a temp buffer when WHT_inv is needed (so we can
+        // invert in-place before writing the final result to out)
+        float * dst = need_wht_inv ? dequant_tmp.data() : (out + (size_t)ci * head_dim);
 
         switch (k_type) {
+            case GGML_TYPE_TURBO2_0:
+                dequantize_row_turbo2_0(quant_buf.data(), dst, head_dim);
+                break;
             case GGML_TYPE_TURBO3_0:
-                dequantize_row_turbo3_0(quant_buf.data(), dst, padded_hd);
+                dequantize_row_turbo3_0(quant_buf.data(), dst, head_dim);
                 break;
             case GGML_TYPE_TURBO4_0:
-                dequantize_row_turbo4_0(quant_buf.data(), dst, padded_hd);
-                break;
-            case GGML_TYPE_TURBO2_0:
-                dequantize_row_turbo2_0(quant_buf.data(), dst, padded_hd);
+                // dequantize_row_turbo4_0 leaves values in WHT-rotated space.
+                // The attention kernel keeps Q also rotated so <Q_rot,K_rot>=<Q,K>,
+                // but TriAttention needs unrotated K to correctly invert RoPE.
+                // WHT_inv is applied below via need_wht_inv=true.
+                dequantize_row_turbo4_0(quant_buf.data(), dst, head_dim);
                 break;
             case GGML_TYPE_Q8_0:
-                dequantize_row_q8_0(quant_buf.data(), dst, padded_hd);
+                dequantize_row_q8_0(quant_buf.data(), dst, head_dim);
                 break;
             case GGML_TYPE_F16: {
                 const ggml_fp16_t * src16 = (const ggml_fp16_t *)quant_buf.data();
-                for (uint32_t j = 0; j < padded_hd; j++) {
+                for (uint32_t j = 0; j < head_dim; j++) {
                     dst[j] = ggml_fp16_to_fp32(src16[j]);
                 }
                 break;
             }
             case GGML_TYPE_BF16: {
                 const ggml_bf16_t * src16 = (const ggml_bf16_t *)quant_buf.data();
-                for (uint32_t j = 0; j < padded_hd; j++) {
+                for (uint32_t j = 0; j < head_dim; j++) {
                     dst[j] = ggml_bf16_to_fp32(src16[j]);
                 }
                 break;
             }
             case GGML_TYPE_F32: {
-                memcpy(dst, quant_buf.data(), padded_hd * sizeof(float));
+                memcpy(dst, quant_buf.data(), head_dim * sizeof(float));
                 break;
             }
             default:
                 fprintf(stderr, "[TriAttention] ERROR: unsupported K cache type %d\n", k_type);
-                memset(out + (size_t)ci * padded_hd, 0, padded_hd * sizeof(float));
+                memset(out + (size_t)ci * head_dim, 0, head_dim * sizeof(float));
                 continue;
         }
 
-        // Apply inverse WHT rotation for turbo2/turbo3
-        // turbo4 dequant already applies R^T internally
+        // Apply inverse WHT for all TurboQuant types.
+        // turbo_cpu_fwht_inverse is in-place and handles group sizes 64 and 128.
+        // All turbo types use group_size == head_dim (one WHT group per head).
         if (need_wht_inv) {
-            float * final_dst = out + (size_t)ci * padded_hd;
-            // Process in 128-element blocks (WHT block size)
-            for (uint32_t b = 0; b < padded_hd; b += 128) {
-                matvec_128(TURBO_ROTATION_RT, dequant_tmp.data() + b, final_dst + b);
+            float * final_dst = out + (size_t)ci * head_dim;
+            const int gs = (int)((head_dim >= 128) ? 128 : head_dim);
+            for (uint32_t b = 0; b < head_dim; b += (uint32_t)gs) {
+                turbo_cpu_fwht_inverse(dequant_tmp.data() + b, gs);
             }
+            memcpy(final_dst, dequant_tmp.data(), head_dim * sizeof(float));
         }
     }
 }
@@ -896,7 +885,9 @@ static void triattention_init_gpu(triattention_state * state, ggml_type k_type) 
     gcfg.n_sampled    = cal->n_sampled;
     gcfg.n_offsets    = state->n_offsets;
     gcfg.k_type       = k_type;
-    gcfg.need_wht_inv = (k_type == GGML_TYPE_TURBO2_0 || k_type == GGML_TYPE_TURBO3_0);
+    gcfg.need_wht_inv = (k_type == GGML_TYPE_TURBO2_0 ||
+                          k_type == GGML_TYPE_TURBO3_0 ||
+                          k_type == GGML_TYPE_TURBO4_0);
     gcfg.disable_trig = cfg.disable_trig;
 
     std::vector<triattention_gpu_head_calib> gcalibs(cal->n_sampled);
@@ -1089,7 +1080,6 @@ int32_t triattention_prune_impl(
     const auto * cal = state->cal;
     const uint32_t fc = cal->freq_count;
     const uint32_t hd = cal->head_dim;
-    const uint32_t padded_hd = ((hd + 127) / 128) * 128;
     const uint32_t budget = cfg.budget;
 
     // ---- Step 1: Enumerate occupied cells ----
@@ -1258,7 +1248,11 @@ int32_t triattention_prune_impl(
 
             const ggml_tensor * k_tensor = k_tensors[ikv];
             const ggml_type k_type_l = k_tensor->type;
-            const bool need_wht_inv = (k_type_l == GGML_TYPE_TURBO2_0 || k_type_l == GGML_TYPE_TURBO3_0);
+            // All TurboQuant types store K in WHT-rotated space after dequant;
+            // we must invert the WHT before inverting RoPE.
+            const bool need_wht_inv = (k_type_l == GGML_TYPE_TURBO2_0 ||
+                                       k_type_l == GGML_TYPE_TURBO3_0 ||
+                                       k_type_l == GGML_TYPE_TURBO4_0);
 
             // 3a. Dequantize K for this KV head for all decode cells
             triattention_dequant_kv_head(
@@ -1267,7 +1261,7 @@ int32_t triattention_prune_impl(
                 decode_cell_idx.data(),
                 kv_head,
                 n_decode,
-                padded_hd,
+                hd,
                 cal->num_kv_heads,
                 need_wht_inv);
 
@@ -1278,7 +1272,7 @@ int32_t triattention_prune_impl(
                 decode_positions.data(),
                 state->omega,
                 n_decode,
-                padded_hd,
+                hd,
                 fc,
                 cal->rope_style);
 
@@ -1293,7 +1287,7 @@ int32_t triattention_prune_impl(
                 decode_positions.data(),
                 state->absolute_position,
                 n_decode,
-                padded_hd,
+                hd,
                 fc,
                 state->n_offsets,
                 cfg.agg,
