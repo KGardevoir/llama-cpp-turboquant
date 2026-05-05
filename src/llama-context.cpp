@@ -2252,23 +2252,32 @@ llm_graph_cb llama_context::graph_get_cb() const {
 
         // Calibration hook: mark pre-RoPE Q tensors as graph outputs so their
         // device memory is preserved until we read it back after graph_compute.
-        if (tria_cal && il >= 0 && strcmp(name, "Qcur_pre_rope") == 0) {
-            // For reshape-views (separate QKV) and view_3d slices (fused QKV),
-            // ggml_set_output on the view alone does not prevent the allocator
-            // from reusing the backing tensor's memory for other ops in the same
-            // graph.  Walk the view chain and mark the actual data tensor too.
-            ggml_tensor * data_src = cur;
-            while (data_src->view_src) {
-                data_src = data_src->view_src;
+        if (tria_cal) {
+            // One-shot breadcrumb so we can confirm the cb is wired up and tria_cal is visible.
+            static bool cb_first_call_logged = false;
+            if (!cb_first_call_logged) {
+                cb_first_call_logged = true;
+                fprintf(stderr, "[TriAttention calibrate] graph_get_cb: first call (name=%s il=%d tria_cal=%p)\n",
+                        name, il, (void*)tria_cal);
             }
-            ggml_set_output(data_src);
-            ggml_set_output(cur);
-            tria_cal->pending_q[il] = cur;
-            if (il == 0) {
-                fprintf(stderr, "[TriAttention calibrate] graph_get_cb: Qcur_pre_rope fired for layer 0 "
-                        "(ne=[%lld,%lld,%lld] type=%d)\n",
-                        (long long)cur->ne[0], (long long)cur->ne[1], (long long)cur->ne[2],
-                        (int)cur->type);
+            if (il >= 0 && strcmp(name, "Qcur_pre_rope") == 0) {
+                // For reshape-views (separate QKV) and view_3d slices (fused QKV),
+                // ggml_set_output on the view alone does not prevent the allocator
+                // from reusing the backing tensor's memory for other ops in the same
+                // graph.  Walk the view chain and mark the actual data tensor too.
+                ggml_tensor * data_src = cur;
+                while (data_src->view_src) {
+                    data_src = data_src->view_src;
+                }
+                ggml_set_output(data_src);
+                ggml_set_output(cur);
+                tria_cal->pending_q[il] = cur;
+                if (il == 0) {
+                    fprintf(stderr, "[TriAttention calibrate] graph_get_cb: Qcur_pre_rope fired for layer 0 "
+                            "(ne=[%lld,%lld,%lld] type=%d)\n",
+                            (long long)cur->ne[0], (long long)cur->ne[1], (long long)cur->ne[2],
+                            (int)cur->type);
+                }
             }
         }
     };

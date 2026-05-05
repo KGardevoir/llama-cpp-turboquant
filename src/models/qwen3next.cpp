@@ -136,6 +136,7 @@ ggml_tensor * llm_build_qwen3next::build_layer_attn(
 
     Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, nullptr, LLM_NORM_RMS, il);
     cb(Qcur, "Qcur_normed", il);
+    cb(Qcur, "Qcur_pre_rope", il);
 
     Kcur = build_norm(Kcur, model.layers[il].attn_k_norm, nullptr, LLM_NORM_RMS, il);
     cb(Kcur, "Kcur_normed", il);

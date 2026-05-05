@@ -35,6 +35,7 @@ llm_build_qwen3moe::llm_build_qwen3moe(const llama_model & model, const llm_grap
 
             Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, NULL, LLM_NORM_RMS, il);
             cb(Qcur, "Qcur_normed", il);
+            cb(Qcur, "Qcur_pre_rope", il);
 
             Qcur = ggml_rope_ext(
                     ctx0, Qcur, inp_pos, nullptr,

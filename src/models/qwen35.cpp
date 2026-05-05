@@ -137,6 +137,7 @@ ggml_tensor * llm_build_qwen35::build_layer_attn(
     // Apply Q normalization
     Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, nullptr, LLM_NORM_RMS, il);
     cb(Qcur, "Qcur_normed", il);
+    cb(Qcur, "Qcur_pre_rope", il);
 
     ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur, model.layers[il].wk_s);
     cb(Kcur, "Kcur", il);
