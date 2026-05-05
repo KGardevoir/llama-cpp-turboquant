@@ -49,6 +49,8 @@ llm_build_step35_iswa::llm_build_step35_iswa(const llama_model & model, const ll
                 cb(Kcur, "Kcur_normed", il);
             }
 
+            cb(Qcur, "Qcur_pre_rope", il);
+
             // RoPE (partial rotary factors per layer)
             const bool is_swa = hparams.is_swa(il);
             ggml_tensor * rope_factors = is_swa ? nullptr : model.get_rope_factors(cparams, il);

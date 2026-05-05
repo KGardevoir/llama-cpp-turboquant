@@ -53,6 +53,7 @@ llm_build_olmo2<iswa>::llm_build_olmo2(const llama_model & model, const llm_grap
             Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
             Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
             Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
+            cb(Qcur, "Qcur_pre_rope", il);
 
             const bool is_swa = hparams.is_swa(il);
 

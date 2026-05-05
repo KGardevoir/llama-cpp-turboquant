@@ -60,6 +60,7 @@ llm_build_plamo3<iswa>::llm_build_plamo3(const llama_model & model, const llm_gr
 
         Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, NULL, LLM_NORM_RMS, il);
         cb(Qcur, "attn_q_norm", il);
+        cb(Qcur, "Qcur_pre_rope", il);
         Kcur = build_norm(Kcur, model.layers[il].attn_k_norm, NULL, LLM_NORM_RMS, il);
         cb(Kcur, "attn_k_norm", il);
 

@@ -50,6 +50,7 @@ llm_build_openelm::llm_build_openelm(const llama_model & model, const llm_graph_
                     model.layers[il].attn_q_norm, NULL,
                     LLM_NORM_RMS, il);
             cb(Qcur, "Qcur", il);
+            cb(Qcur, "Qcur_pre_rope", il);
 
             Kcur = build_norm(Kcur,
                     model.layers[il].attn_k_norm, NULL,

@@ -46,6 +46,7 @@ llm_build_minimax_m2::llm_build_minimax_m2(const llama_model & model, const llm_
             Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
             Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
             Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
+            cb(Qcur, "Qcur_pre_rope", il);
 
             Qcur = ggml_rope_ext(
                 ctx0, Qcur, inp_pos, nullptr,
