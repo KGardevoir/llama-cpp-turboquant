@@ -3420,16 +3420,10 @@ int32_t llama_triattention_init(
         return -1;
     }
 
-    // Get the memory and try to cast to llama_kv_cache
+    // Get the memory — supports llama_kv_cache, llama_memory_hybrid, and llama_memory_hybrid_iswa
     auto * mem = ctx->get_memory();
     if (!mem) {
         LLAMA_LOG_ERROR("%s: context has no memory\n", __func__);
-        return -1;
-    }
-
-    auto * kv = dynamic_cast<llama_kv_cache *>(mem);
-    if (!kv) {
-        LLAMA_LOG_ERROR("%s: memory is not a KV cache (recurrent models not supported)\n", __func__);
         return -1;
     }
 
@@ -3447,8 +3441,8 @@ int32_t llama_triattention_init(
     cfg.disable_trig     = disable_trig;
     cfg.enable_logging   = enable_logging;
 
-    kv->init_triattention(stats_path, &cfg);
-    return kv->has_triattention() ? 0 : -1;
+    mem->init_triattention(stats_path, &cfg);
+    return mem->has_triattention() ? 0 : -1;
 }
 
 int32_t llama_context::triattention_calibrate_start(const char * output_path) {

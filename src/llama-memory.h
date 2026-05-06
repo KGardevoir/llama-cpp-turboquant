@@ -13,6 +13,9 @@ class llama_batch_allocr;
 class llama_io_write_i;
 class llama_io_read_i;
 
+// forward declaration — defined in llama-triattention.h
+struct triattention_config;
+
 struct llama_memory_params {
     // kv cache
     ggml_type type_k;
@@ -126,6 +129,9 @@ struct llama_memory_i {
 
     virtual void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const = 0;
     virtual void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) = 0;
-};
 
+    // TriAttention: initialize from calibration stats
+    virtual void init_triattention(const char * stats_path, const struct triattention_config * cfg) { (void)stats_path; (void)cfg; }
+    virtual bool has_triattention() const { return false; }
+};
 using llama_memory_ptr = std::unique_ptr<llama_memory_i>;

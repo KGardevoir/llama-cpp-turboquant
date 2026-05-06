@@ -82,6 +82,9 @@ public:
     llama_kv_cache * get_mem_attn() const;
     llama_memory_recurrent * get_mem_recr() const;
 
+    // TriAttention support: delegates to the attention component
+    void init_triattention(const char * stats_path, const struct triattention_config * cfg) override;
+    bool has_triattention() const override;
 private:
     const llama_hparams & hparams;
 

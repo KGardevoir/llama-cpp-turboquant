@@ -198,6 +198,14 @@ llama_memory_recurrent * llama_memory_hybrid::get_mem_recr() const {
     return mem_recr.get();
 }
 
+void llama_memory_hybrid::init_triattention(const char * stats_path, const struct triattention_config * cfg) {
+    mem_attn->init_triattention(stats_path, cfg);
+}
+
+bool llama_memory_hybrid::has_triattention() const {
+    return mem_attn->has_triattention();
+}
+
 llama_memory_hybrid_context::llama_memory_hybrid_context(llama_memory_status status) : status(status) {}
 
 llama_memory_hybrid_context::llama_memory_hybrid_context(llama_memory_hybrid * mem) :

@@ -200,6 +200,14 @@ llama_memory_recurrent * llama_memory_hybrid_iswa::get_mem_recr() const {
     return mem_recr.get();
 }
 
+void llama_memory_hybrid_iswa::init_triattention(const char * stats_path, const struct triattention_config * cfg) {
+    mem_attn->init_triattention(stats_path, cfg);
+}
+
+bool llama_memory_hybrid_iswa::has_triattention() const {
+    return mem_attn->has_triattention();
+}
+
 //
 // llama_memory_hybrid_iswa_context
 //
