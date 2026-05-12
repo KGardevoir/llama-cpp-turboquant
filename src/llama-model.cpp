@@ -737,6 +737,13 @@ void llama_model::load_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_EXPERT_GROUP_COUNT,      hparams.n_expert_groups, false);
     ml.get_key(LLM_KV_EXPERT_GROUP_USED_COUNT, hparams.n_group_used,    false);
 
+    if (arch == LLM_ARCH_HUNYUAN_VL || arch == LLM_ARCH_HUNYUAN_DENSE) {
+        if (hparams.n_expert <= 1) {
+            hparams.n_expert      = 0;
+            hparams.n_expert_used = 0;
+        }
+    }
+
     if (arch == LLM_ARCH_WAVTOKENIZER_DEC) {
         ml.get_key(LLM_KV_FEATURES_LENGTH,  hparams.n_embd);
         ml.get_key(LLM_KV_EMBEDDING_LENGTH, hparams.n_embd_out_impl);
@@ -815,6 +822,7 @@ void llama_model::load_hparams(llama_model_loader & ml) {
     hparams.rope_freq_scale_train = ropescale == 0.0f ? 1.0f : 1.0f/ropescale;
 
     ml.get_key(LLM_KV_ROPE_SCALING_ATTN_FACTOR, hparams.rope_attn_factor, false);
+    ml.get_key(LLM_KV_ROPE_SCALING_ALPHA,       hparams.rope_scaling_alpha, false);
 
     // non-transformer models do not have attention heads
     if (hparams.n_head() > 0) {
@@ -2592,9 +2600,18 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                     default: type = LLM_TYPE_UNKNOWN;
                 }
             } break;
+        case LLM_ARCH_HUNYUAN_VL:
         case LLM_ARCH_HUNYUAN_DENSE:
             {
                 ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+                ml.get_key_or_arr(LLM_KV_ROPE_DIMENSION_SECTIONS, hparams.rope_sections, 4, false);
+
+                // XDRoPE / NTK-aware scaling: base = rope_theta * alpha^(dim / (dim - 2))
+                if (hparams.rope_scaling_alpha > 0.0f) {
+                    const int dim = hparams.n_embd_head_k();
+                    hparams.rope_freq_base_train = hparams.rope_freq_base_train
+                        * powf(hparams.rope_scaling_alpha, (float)dim / (float)(dim - 2));
+                }
 
                 switch (hparams.n_embd) {
                     case 1024: type = LLM_TYPE_0_5B; break;
@@ -2740,6 +2757,57 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                     case 62: type = LLM_TYPE_230B_A10B; break;
                     default: type = LLM_TYPE_UNKNOWN;
                 }
+            } break;
+        case LLM_ARCH_EAGLE3:
+            {
+                ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+                // EAGLE3 layer extraction configuration
+                // Use array<int, 4> (has template instantiation), then copy first 3 elements
+                std::array<int, 4> extract_layers_tmp = {};
+                if (!ml.get_key_or_arr(LLM_KV_EAGLE3_EXTRACT_LAYERS, extract_layers_tmp, 3, false)) {
+                    throw std::runtime_error("EAGLE3 model requires 'extract_layers' in GGUF metadata");
+                }
+                std::copy_n(extract_layers_tmp.begin(), 3, hparams.eagle3_extract_layers.begin());
+                LLAMA_LOG_INFO("%s: EAGLE3 extract_layers = [%d, %d, %d]\n", __func__,
+                               hparams.eagle3_extract_layers[0],
+                               hparams.eagle3_extract_layers[1],
+                               hparams.eagle3_extract_layers[2]);
+
+                // EAGLE3 target model hidden size
+                ml.get_key(LLM_KV_EAGLE3_TARGET_HIDDEN_SIZE, hparams.eagle3_target_hidden_size);
+                LLAMA_LOG_INFO("%s: EAGLE3 target_hidden_size = %u (draft n_embd = %u)\n", __func__,
+                               hparams.eagle3_target_hidden_size, hparams.n_embd);
+
+                // EAGLE3 norm_before_residual (optional, default false)
+                // compatible with Readhat eagle3 speculator model
+                ml.get_key(LLM_KV_EAGLE3_NORM_BEFORE_RESIDUAL, hparams.eagle3_norm_before_residual, false);
+                if (hparams.eagle3_norm_before_residual) {
+                    LLAMA_LOG_INFO("%s: EAGLE3 norm_before_residual = true\n", __func__);
+                }
+
+                type = LLM_TYPE_UNKNOWN;
+            } break;
+        case LLM_ARCH_DFLASH:
+            {
+                ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+
+                ml.get_key(LLM_KV_DFLASH_BLOCK_SIZE, hparams.dflash_block_size, false);
+                ml.get_key(LLM_KV_DFLASH_MASK_TOKEN_ID, hparams.dflash_mask_token_id, false);
+
+                if (!ml.get_key_or_arr(LLM_KV_DFLASH_TARGET_LAYER_IDS, hparams.dflash_target_layer_ids, 5, false)) {
+                    throw std::runtime_error("DFlash model requires 'target_layer_ids' in GGUF metadata");
+                }
+                LLAMA_LOG_INFO("%s: DFlash extract_layers = [%d, %d, %d, %d, %d]\n", __func__,
+                               hparams.dflash_target_layer_ids[0],
+                               hparams.dflash_target_layer_ids[1],
+                               hparams.dflash_target_layer_ids[2],
+                               hparams.dflash_target_layer_ids[3],
+                               hparams.dflash_target_layer_ids[4]);
+
+                LLAMA_LOG_INFO("%s: DFlash block_size = %u, mask_token_id = %u\n",
+                               __func__, hparams.dflash_block_size, hparams.dflash_mask_token_id);
+
+                type = LLM_TYPE_UNKNOWN;
             } break;
         case LLM_ARCH_COGVLM:
             {
@@ -6947,6 +7015,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.ffn_down_shexp = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP, "weight", i), {n_ff_shexp, n_embd}, 0);
                     }
                 } break;
+            case LLM_ARCH_HUNYUAN_VL:
             case LLM_ARCH_HUNYUAN_DENSE:
                 {
                     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
@@ -7234,6 +7303,97 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_ff,   n_embd, n_expert}, 0);
                         layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {n_embd, n_ff,   n_expert}, 0);
                         layer.ffn_exp_probs_b = create_tensor(tn(LLM_TENSOR_FFN_EXP_PROBS_B, "bias", i), {n_expert}, 0);
+                    }
+                } break;
+            case LLM_ARCH_EAGLE3:
+                {
+                    const int64_t n_embd_target_features = 3 * hparams.eagle3_target_hidden_size;
+                    const int64_t n_embd_attn_input = 2 * n_embd;
+
+                    // Get vocab size from the d2t tensor in the GGUF file (optional - only needed if EAGLE3 has different vocab_size than target)
+                    // d2t: draft to target vocabulary mapping
+                    int64_t n_draft_vocab = n_vocab;  // Default: same as target vocab
+                    const struct ggml_tensor * d2t_meta = ml.get_tensor_meta("d2t");
+                    if (d2t_meta) {
+                        n_draft_vocab = d2t_meta->ne[0]; // update draft vocab size
+                        d2t = create_tensor(tn(LLM_TENSOR_EAGLE3_D2T), {n_draft_vocab}, 0);
+                        LLAMA_LOG_INFO("%s: EAGLE3 using d2t mapping (draft_vocab_size = %lld)\n", __func__, (long long)n_draft_vocab);
+                    } else {
+                        d2t = nullptr; // no d2t, use default vocab size
+                        LLAMA_LOG_INFO("%s: EAGLE3 without d2t - sharing same vocab_size with target (vocab_size = %lld)\n", __func__, (long long)n_draft_vocab);
+                    }
+
+                    // Feature fusion layer: projects 3 target layers to draft hidden size
+                    fc = create_tensor(tn(LLM_TENSOR_EAGLE3_FC, "weight"), {n_embd_target_features, n_embd}, 0);
+
+                    // Output layer (uses draft vocab size)
+                    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
+                    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_draft_vocab}, 0);
+
+                    // Token embeddings (optional - Llama 3.3 70B EAGLE3 has its own)
+                    const struct ggml_tensor * tok_embd_meta = ml.get_tensor_meta(tn(LLM_TENSOR_TOKEN_EMBD, "weight").str().c_str());
+                    if (tok_embd_meta) {
+                        const int64_t n_target_vocab = tok_embd_meta->ne[1];
+                        tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_target_vocab}, 0);
+                        LLAMA_LOG_INFO("%s: EAGLE3 using its own token_embd (vocab = %lld)\n", __func__, (long long)n_target_vocab);
+                    }
+
+                    // Single decoder layer
+                    for (int i = 0; i < n_layer; ++i) {
+                        auto & layer = layers[i];
+
+                        // input_layernorm: applied to token embeddings
+                        layer.attn_norm = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, 0);
+
+                        // Attention takes input_embeds_normed + fused_target_normed as input
+                        layer.wq = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "weight", i), {n_embd_attn_input, n_embd_head_k * n_head}, 0);
+                        layer.wk = create_tensor(tn(LLM_TENSOR_ATTN_K,   "weight", i), {n_embd_attn_input, n_embd_k_gqa}, 0);
+                        layer.wv = create_tensor(tn(LLM_TENSOR_ATTN_V,   "weight", i), {n_embd_attn_input, n_embd_v_gqa}, 0);
+                        layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd_head_k * n_head, n_embd}, 0);
+
+                        // EAGLE-3 specific: hidden_norm applied to fused target features
+                        layer.eagle3_hidden_norm = create_tensor(tn(LLM_TENSOR_EAGLE3_HIDDEN_NORM, "weight", i), {n_embd}, 0);
+
+                        layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, 0);
+                        layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
+                        layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
+                        layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
+
+                        // rope_freqs for llama3 rope scaling (optional - only if EAGLE3 config has rope_scaling)
+                        layer.rope_freqs = create_tensor(tn(LLM_TENSOR_ROPE_FREQS, "weight", i), {n_rot/2}, TENSOR_NOT_REQUIRED);
+                    }
+                } break;
+            case LLM_ARCH_DFLASH:
+                {
+                    const int64_t n_target_layer_ids = (int64_t)hparams.dflash_target_layer_ids.size();
+                    const int64_t n_embd_target_features = n_target_layer_ids * n_embd;
+
+                    fc = create_tensor(tn(LLM_TENSOR_DFLASH_FC, "weight"), {n_embd_target_features, n_embd}, 0);
+                    dflash_hidden_norm = create_tensor(tn(LLM_TENSOR_DFLASH_HIDDEN_NORM, "weight"), {n_embd}, 0);
+                    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
+
+                    for (int i = 0; i < n_layer; ++i) {
+                        auto & layer = layers[i];
+
+                        layer.attn_norm = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, 0);
+
+                        layer.wq = create_tensor(tn(LLM_TENSOR_ATTN_Q, "weight", i), {n_embd, n_embd_head_k * n_head}, 0);
+                        layer.wk = create_tensor(tn(LLM_TENSOR_ATTN_K, "weight", i), {n_embd, n_embd_k_gqa}, 0);
+                        layer.wv = create_tensor(tn(LLM_TENSOR_ATTN_V, "weight", i), {n_embd, n_embd_v_gqa}, 0);
+                        layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd_head_k * n_head, n_embd}, 0);
+
+                        layer.wq_b = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "bias", i), {n_embd_head_k * n_head}, TENSOR_NOT_REQUIRED);
+                        layer.wk_b = create_tensor(tn(LLM_TENSOR_ATTN_K,   "bias", i), {n_embd_k_gqa},          TENSOR_NOT_REQUIRED);
+                        layer.wv_b = create_tensor(tn(LLM_TENSOR_ATTN_V,   "bias", i), {n_embd_v_gqa},          TENSOR_NOT_REQUIRED);
+                        layer.wo_b = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "bias", i), {n_embd},                TENSOR_NOT_REQUIRED);
+
+                        layer.attn_q_norm = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM, "weight", i), {n_embd_head_k}, 0);
+                        layer.attn_k_norm = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM, "weight", i), {n_embd_head_k}, 0);
+
+                        layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, 0);
+                        layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd, n_ff}, 0);
+                        layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {n_ff, n_embd}, 0);
+                        layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd, n_ff}, 0);
                     }
                 } break;
             case LLM_ARCH_KIMI_LINEAR:
@@ -8423,6 +8583,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
         case LLM_ARCH_LLADA:
         case LLM_ARCH_LLADA_MOE:
         case LLM_ARCH_RND1:
+        case LLM_ARCH_DFLASH: // current DFlash decoder doesn't support KV-cache due to cross_attn + self_attn (no mask) 
             {
                 res = nullptr;
             } break;
@@ -8967,6 +9128,7 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
             {
                 llm = std::make_unique<llm_build_hunyuan_moe>(*this, params);
             } break;
+        case LLM_ARCH_HUNYUAN_VL:
         case LLM_ARCH_HUNYUAN_DENSE:
             {
                 llm = std::make_unique<llm_build_hunyuan_dense>(*this, params);
@@ -9011,6 +9173,22 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
         case LLM_ARCH_MINIMAX_M2:
             {
                 llm = std::make_unique<llm_build_minimax_m2>(*this, params);
+            } break;
+        case LLM_ARCH_EAGLE3:
+            {
+                if (params.gtype == LLM_GRAPH_TYPE_ENCODER) {
+                    llm = std::make_unique<llm_build_eagle3_encode>(*this, params);
+                } else {
+                    llm = std::make_unique<llm_build_eagle3_decode>(*this, params);
+                }
+            } break;
+        case LLM_ARCH_DFLASH:
+            {
+                if (params.gtype == LLM_GRAPH_TYPE_ENCODER) {
+                    llm = std::make_unique<llm_build_dflash_encode>(*this, params);
+                } else {
+                    llm = std::make_unique<llm_build_dflash_decode>(*this, params);
+                }
             } break;
         case LLM_ARCH_COGVLM:
             {
@@ -9142,6 +9320,14 @@ int32_t llama_model_n_swa(const llama_model * model) {
     return model->hparams.n_swa;
 }
 
+int32_t llama_model_dflash_block_size(const llama_model * model) {
+    return (int32_t) model->hparams.dflash_block_size;
+}
+
+int32_t llama_model_dflash_mask_token_id(const llama_model * model) {
+    return (int32_t) model->hparams.dflash_mask_token_id;
+}
+
 uint32_t llama_model_n_cls_out(const struct llama_model * model) {
     return model->hparams.n_cls_out;
 }
@@ -9230,6 +9416,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_ERNIE4_5:
         case LLM_ARCH_ERNIE4_5_MOE:
         case LLM_ARCH_MISTRAL3:
+        case LLM_ARCH_EAGLE3:
         case LLM_ARCH_MISTRAL4:
         case LLM_ARCH_LLAMA_EMBED:
         case LLM_ARCH_MAINCODER:
@@ -9255,6 +9442,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_QWEN2MOE:
         case LLM_ARCH_QWEN3:
         case LLM_ARCH_QWEN3MOE:
+        case LLM_ARCH_DFLASH:
         case LLM_ARCH_LLADA_MOE:
         case LLM_ARCH_RND1:
         case LLM_ARCH_OLMO2:
@@ -9314,6 +9502,9 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_GLM4:
             return model->hparams.use_mrope() ? LLAMA_ROPE_TYPE_MROPE : LLAMA_ROPE_TYPE_NORM;
         case LLM_ARCH_GLM4_MOE:
+            return model->hparams.use_mrope() ? LLAMA_ROPE_TYPE_MROPE : LLAMA_ROPE_TYPE_NEOX;
+
+        case LLM_ARCH_HUNYUAN_VL:
             return model->hparams.use_mrope() ? LLAMA_ROPE_TYPE_MROPE : LLAMA_ROPE_TYPE_NEOX;
 
         // all model arches should be listed explicitly here
